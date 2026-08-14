@@ -65,7 +65,26 @@ enum {
   SESSION_INIT,
   SESSION_READY,
   SESSION_HEARTBEAT,
+  SESSION_INITIATOR = 1 << 8,
+  SESSION_ROLE_KNOWN = 1 << 9,
+  SESSION_ROLE_MASK = SESSION_INITIATOR | SESSION_ROLE_KNOWN,
 };
+
+static int GetSessionState(const struct omemo2Session *session) {
+  return session->init & ~SESSION_ROLE_MASK;
+}
+
+static bool IsSessionInitiator(const struct omemo2Session *session) {
+  return session->init & SESSION_INITIATOR;
+}
+
+static bool HasSessionRole(const struct omemo2Session *session) {
+  return session->init & SESSION_ROLE_KNOWN;
+}
+
+static void SetSessionState(struct omemo2Session *session, int state) {
+  session->init = state | (session->init & SESSION_ROLE_MASK);
+}
 
 #define SerLen sizeof(omemo2SerializedKey)
 
@@ -459,6 +478,19 @@ static int GetMac(uint8_t d[static MACSIZE], const omemo2Key ika,
   return 0;
 }
 
+static int GetSessionMac(uint8_t d[static MACSIZE],
+                         const struct omemo2Session *session,
+                         const omemo2Key mk, const uint8_t *msg,
+                         size_t msgn) {
+  const uint8_t *ika = IsSessionInitiator(session)
+                           ? session->identity
+                           : session->remoteidentity;
+  const uint8_t *ikb = IsSessionInitiator(session)
+                           ? session->remoteidentity
+                           : session->identity;
+  return GetMac(d, ika, ikb, mk, msg, msgn);
+}
+
 #define GetPad(n) (16 - ((n) % 16))
 
 static int Encrypt(uint8_t out[OMEMO2_INTERNAL_PAYLOAD_MAXPADDEDSIZE],
@@ -504,6 +536,11 @@ static int EncryptKeyImpl(struct omemo2Session *session,
                           const uint8_t *key, size_t keyn) {
   if (!session->init)
     return OMEMO2_ESTATE;
+  if (!HasSessionRole(session)) {
+    if (GetSessionState(session) != SESSION_INIT)
+      return OMEMO2_ESTATE;
+    session->init |= SESSION_ROLE_KNOWN | SESSION_INITIATOR;
+  }
   omemo2Key mk;
   TRY(GetBaseMaterials(session->state.cks, mk, session->state.cks));
   struct DeriveChainKeyOutput kdfout[1];
@@ -521,10 +558,10 @@ static int EncryptKeyImpl(struct omemo2Session *session,
   msg->n +=
       Encrypt(msg->p + msg->n, key, keyn, kdfout->cipher, kdfout->iv);
   msg->p[19] = msg->n - 20;
-  TRY(GetMac(msg->p + 2, session->identity, session->remoteidentity,
-             kdfout->mac, msg->p + 20, msg->n - 20));
+  TRY(GetSessionMac(msg->p + 2, session, kdfout->mac,
+                    msg->p + 20, msg->n - 20));
   session->state.ns++;
-  if (session->init == SESSION_INIT) {
+  if (GetSessionState(session) == SESSION_INIT) {
     msg->isprekey = true;
     // [message 00...] -> [00... message] -> [header 00... message] ->
     // [header message]
@@ -639,7 +676,8 @@ int omemo2InitiateSession(struct omemo2Session *session,
   memcpy(session->remoteidentity, GetRawKey(ik), 32);
   session->usedpk_id = pk_id;
   session->usedspk_id = spk_id;
-  session->init = SESSION_INIT;
+  session->init = SESSION_INIT | SESSION_ROLE_KNOWN |
+                  SESSION_INITIATOR;
   return 0;
 }
 
@@ -787,8 +825,8 @@ static int DecryptKeyImpl(struct omemo2Session *session,
   struct DeriveChainKeyOutput kdfout[1];
   TRY(DeriveKey(Zero32, mk, HkdfInfoMessageKeys, kdfout));
   uint8_t mac[MACSIZE];
-  TRY(GetMac(mac, session->remoteidentity, session->identity,
-             kdfout->mac, fields1[2].p, fields1[2].v));
+  TRY(GetSessionMac(mac, session, kdfout->mac,
+                    fields1[2].p, fields1[2].v));
   if (omemoDriverCompare(mac, realmac, MACSIZE))
     return OMEMO2_ECORRUPT;
   uint8_t tmp[OMEMO2_INTERNAL_PAYLOAD_MAXPADDEDSIZE];
@@ -799,7 +837,7 @@ static int DecryptKeyImpl(struct omemo2Session *session,
     return OMEMO2_ECORRUPT;
   memcpy(key, tmp, encn - pad);
   *keyn = encn - pad;
-  session->init = SESSION_READY;
+  SetSessionState(session, SESSION_READY);
   return 0;
 }
 
@@ -809,9 +847,15 @@ static int DecryptGenericKeyImpl(struct omemo2Session *session,
                                  bool isprekey, const uint8_t *msg,
                                  size_t msgn) {
   const struct omemo2PreKey *pk = NULL;
+  if (!HasSessionRole(session)) {
+    if (GetSessionState(session) == SESSION_INIT)
+      session->init |= SESSION_ROLE_KNOWN | SESSION_INITIATOR;
+    else if (GetSessionState(session) != SESSION_UNINIT)
+      return OMEMO2_ESTATE;
+  }
   if (isprekey) {
     // Can't receive prekey when we sent a prekey...
-    if (session->init == SESSION_INIT)
+    if (GetSessionState(session) == SESSION_INIT)
       return OMEMO2_ESTATE;
     // OMEMOKeyExchange
     struct ProtobufField fields[6] = {
@@ -823,7 +867,8 @@ static int DecryptGenericKeyImpl(struct omemo2Session *session,
     };
     if (ParseProtobuf(msg, msgn, fields, 6))
       return OMEMO2_EPROTOBUF;
-    if (session->init == SESSION_UNINIT) {
+    if (GetSessionState(session) == SESSION_UNINIT) {
+      session->init |= SESSION_ROLE_KNOWN;
       pk = FindPreKey(store, fields[PbKeyEx_pk_id].v);
       const struct omemo2SignedPreKey *spk =
           FindSignedPreKey(store, fields[PbKeyEx_spk_id].v);
@@ -845,12 +890,12 @@ static int DecryptGenericKeyImpl(struct omemo2Session *session,
     }
     msg = fields[PbKeyEx_message].p;
     msgn = fields[PbKeyEx_message].v;
-  } else if (session->init == SESSION_INIT) {
+  } else if (GetSessionState(session) == SESSION_INIT) {
     // We don't need these anymore
     session->usedpk_id = 0;
     session->usedspk_id = 0;
     memset(session->usedek, 0, 32);
-  } else if (session->init == SESSION_UNINIT) {
+  } else if (GetSessionState(session) == SESSION_UNINIT) {
     return OMEMO2_ESTATE;
   }
   if (memcmp(session->identity, store->identity.pub, 32))
@@ -882,15 +927,18 @@ int omemo2Heartbeat(struct omemo2Session *session,
                                 const struct omemo2Store *store,
                                 struct omemo2KeyMessage *msg) {
   if (!session || !store || !msg) return OMEMO2_EPARAM;
+  if (GetSessionState(session) != SESSION_UNINIT &&
+      !HasSessionRole(session))
+    return OMEMO2_ESTATE;
   if (session->state.nr >= 53) {
-    if (session->init == SESSION_READY) {
+    if (GetSessionState(session) == SESSION_READY) {
       uint8_t empty[32] = { 0 };
       int r = omemo2EncryptKey(session, msg, empty, 32);
-      if (!r) session->init = SESSION_HEARTBEAT;
+      if (!r) SetSessionState(session, SESSION_HEARTBEAT);
       return r;
     }
-  } else if (session->init == SESSION_HEARTBEAT) {
-    session->init = SESSION_READY;
+  } else if (GetSessionState(session) == SESSION_HEARTBEAT) {
+    SetSessionState(session, SESSION_READY);
   }
   return 0;
 }

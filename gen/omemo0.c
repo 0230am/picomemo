@@ -67,6 +67,7 @@ enum {
   SESSION_HEARTBEAT,
 };
 
+
 #define SerLen sizeof(omemo0SerializedKey)
 
 static omemo0LoadMessageKeyCallback  g_lmkcb;
@@ -483,6 +484,7 @@ static int GetMac(uint8_t d[static MACSIZE], const omemo0Key ika,
   return 0;
 }
 
+
 #define GetPad(n) (16 - ((n) % 16))
 
 static int Encrypt(uint8_t out[OMEMO0_INTERNAL_PAYLOAD_MAXPADDEDSIZE],
@@ -543,6 +545,7 @@ static int EncryptKeyImpl(struct omemo0Session *session,
              session->remoteidentity, kdfout->mac, msg->p, msg->n));
   msg->n += 8;
   session->state.ns++;
+
   if (session->init == SESSION_INIT) {
     msg->isprekey = true;
     // [message 00...] -> [00... message] -> [header 00... message] ->
@@ -655,6 +658,7 @@ int omemo0InitiateSession(struct omemo0Session *session,
   memcpy(session->remoteidentity, GetRawKey(ik), 32);
   session->usedpk_id = pk_id;
   session->usedspk_id = spk_id;
+
   session->init = SESSION_INIT;
   return 0;
 }
@@ -812,6 +816,7 @@ static int DecryptKeyImpl(struct omemo0Session *session,
     return OMEMO0_ECORRUPT;
   memcpy(key, tmp, encn - pad);
   *keyn = encn - pad;
+
   session->init = SESSION_READY;
   return 0;
 }
@@ -824,6 +829,7 @@ static int DecryptGenericKeyImpl(struct omemo0Session *session,
   const struct omemo0PreKey *pk = NULL;
   if (isprekey) {
     // Can't receive prekey when we sent a prekey...
+
     if (session->init == SESSION_INIT)
       return OMEMO0_ESTATE;
 
@@ -840,6 +846,7 @@ static int DecryptGenericKeyImpl(struct omemo0Session *session,
     };
     if (ParseProtobuf(msg + 1, msgn - 1, fields, 7))
       return OMEMO0_EPROTOBUF;
+
     if (session->init == SESSION_UNINIT) {
       pk = FindPreKey(store, fields[PbKeyEx_pk_id].v);
       const struct omemo0SignedPreKey *spk =
@@ -860,11 +867,13 @@ static int DecryptGenericKeyImpl(struct omemo0Session *session,
     }
     msg = fields[PbKeyEx_message].p;
     msgn = fields[PbKeyEx_message].v;
+
   } else if (session->init == SESSION_INIT) {
     // We don't need these anymore
     session->usedpk_id = 0;
     session->usedspk_id = 0;
     memset(session->usedek, 0, 32);
+
   } else if (session->init == SESSION_UNINIT) {
     return OMEMO0_ESTATE;
   }
@@ -898,12 +907,15 @@ int omemo0Heartbeat(struct omemo0Session *session,
                                 struct omemo0KeyMessage *msg) {
   if (!session || !store || !msg) return OMEMO0_EPARAM;
   if (session->state.nr >= 53) {
+
     if (session->init == SESSION_READY) {
       uint8_t empty[32] = { 0 };
       int r = omemo0EncryptKey(session, msg, empty, 32);
+
       if (!r) session->init = SESSION_HEARTBEAT;
       return r;
     }
+
   } else if (session->init == SESSION_HEARTBEAT) {
     session->init = SESSION_READY;
   }

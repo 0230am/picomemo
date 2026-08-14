@@ -15,6 +15,10 @@ o/test-omemo: test/omemo.c omemo.c $(DRIVEROBJS) o/store.inc o/msg.bin
 o/test-omemo2: test/omemo.c omemo.c $(DRIVEROBJS) o/store2.inc o/msg2.bin
 	$(TESTOMEMO_BUILD) -DOMEMO2
 
+o/test-interop-omemo2: test/interop-omemo2.c omemo.c $(DRIVEROBJS) o/store2.inc
+	$(CC) -o $@ test/interop-omemo2.c omemo.c $(DRIVEROBJS) \
+				$(TESTCFLAGS) $(OMEMOCFLAGS) $(LIBS) -DOMEMO2
+
 o/generate: test/generate.c omemo.c $(DRIVEROBJS)
 	$(CC) -o $@ test/generate.c omemo.c $(DRIVEROBJS) $(TESTCFLAGS) $(LIBS)
 
@@ -51,6 +55,11 @@ test-omemo: o/test-omemo
 test-omemo2: o/test-omemo2
 	$(TESTRUNTOOL) ./o/test-omemo2
 
+.PHONY: test-interop-omemo2
+test-interop-omemo2: o/test-interop-omemo2 | test/interop-venv
+	PYTHONPATH=o ./test/interop-venv/bin/python test/initsession.py \
+		bundle2 ./o/test-interop-omemo2
+
 .PHONY: start-prosody
 start-prosody: test/localhost.crt
 	docker-compose -f test/docker-compose.yml up -d --build
@@ -72,6 +81,10 @@ test/bot-venv:
 	python -m venv test/bot-venv
 	./test/bot-venv/bin/pip install slixmpp==1.8.5
 	./test/bot-venv/bin/pip install slixmpp-omemo==1.0.0
+
+test/interop-venv:
+	python -m venv test/interop-venv
+	./test/interop-venv/bin/pip install OMEMO==2.1.0 Twomemo==2.1.0
 
 start-omemo-bot: | test/bot-venv
 	./test/bot-venv/bin/python test/bot-omemo.py

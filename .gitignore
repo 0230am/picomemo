@@ -1,6 +1,7 @@
 /o/
 /tags
 /test/bot-venv/
+/test/interop-venv/
 /example/esp-im/config.h
 __pycache__
 /mbedtls
