@@ -63,13 +63,13 @@ int omemoDriverGcmEncrypt(uint8_t *d, const uint8_t key[static 16], size_t n, co
   return 0;
 }
 
-int omemoDriverGcmDecrypt(uint8_t *d, const uint8_t key[static 16], size_t n, const uint8_t iv[static 12], const uint8_t *tag, size_t tagn, const uint8_t *s) {
+int omemoDriverGcmDecrypt(uint8_t *d, const uint8_t key[static 16], size_t n, const uint8_t *iv, size_t ivn, const uint8_t *tag, size_t tagn, const uint8_t *s) {
   int r;
   mbedtls_gcm_context ctx;
   mbedtls_gcm_init(&ctx);
   if (!(r = mbedtls_gcm_setkey(&ctx, MBEDTLS_CIPHER_ID_AES, key,
                                128)))
-    r = mbedtls_gcm_auth_decrypt(&ctx, n, iv, 12, "", 0, tag,
+    r = mbedtls_gcm_auth_decrypt(&ctx, n, iv, ivn, "", 0, tag,
                                  tagn, s, d);
   mbedtls_gcm_free(&ctx);
   TRY(r);

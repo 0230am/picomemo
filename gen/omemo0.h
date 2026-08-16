@@ -38,6 +38,7 @@
 #define OMEMO0_ESTORE    (-7)
 #define OMEMO0_EUSER     (-8)
 #define OMEMO0_ERANDOM   (-9)
+#define OMEMO0_EAUTH     (-10)
 
 
 
@@ -285,5 +286,16 @@ OMEMO0_EXPORT int omemo0EncryptMessage(uint8_t *d, uint8_t key[32],
 OMEMO0_EXPORT int omemo0DecryptMessage(uint8_t *d, const uint8_t *key,
                                      size_t keyn, const uint8_t iv[12],
                                      const uint8_t *s, size_t n);
+
+/**
+ * Decrypt a legacy payload with a canonical 12-byte or historical
+ * 16-byte IV. New payloads must still be encrypted with the 12-byte
+ * omemo0EncryptMessage() IV.
+ *
+ * @returns 0 or OMEMO0_E*
+ */
+OMEMO0_EXPORT int omemo0DecryptMessageWithIVLength(
+    uint8_t *d, const uint8_t *key, size_t keyn,
+    const uint8_t *iv, size_t ivn, const uint8_t *s, size_t n);
 
 #endif

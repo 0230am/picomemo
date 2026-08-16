@@ -221,6 +221,30 @@ static void TestSignature() {
 #endif
 }
 
+#ifdef OMEMO2
+static void MakeAuthenticatedBadPayloadPadding(
+    uint8_t encrypted[16], uint8_t payload[48], int kind) {
+  uint8_t key[32], plaintext[16], mac[32];
+  memcpy(key, payload, 32);
+  struct DeriveChainKeyOutput kdfout[1];
+  assert(!DeriveKey(Zero32, key, HkdfInfoPayload, kdfout));
+  assert(!omemoDriverAesDecrypt(kdfout->cipher, 16, kdfout->iv,
+                                encrypted, plaintext));
+  if (kind == 0) {
+    plaintext[15] = 0;
+  } else if (kind == 1) {
+    plaintext[15] = 17;
+  } else {
+    plaintext[14] = 3;
+    plaintext[15] = 2;
+  }
+  assert(!omemoDriverAesEncrypt(kdfout->cipher, 16, kdfout->iv,
+                                plaintext, encrypted));
+  assert(!omemoDriverHmac(kdfout->mac, encrypted, 16, mac));
+  memcpy(payload + 32, mac, 16);
+}
+#endif
+
 static void TestEncryption() {
   const uint8_t *msg = "Hello there!";
   size_t n = strlen(msg);
@@ -245,6 +269,48 @@ static void TestEncryption() {
   assert(!omemoDecryptMessage(decrypted, &n, payload, sizeof(payload), encrypted, 16));
   assert(n == 9);
   assert(!memcmp("plaintext", decrypted, 9));
+  uint8_t valid_payload[48], valid_encrypted[16];
+  memcpy(valid_payload, payload, sizeof(valid_payload));
+  memcpy(valid_encrypted, encrypted, sizeof(valid_encrypted));
+  for (int kind = 0; kind < 3; kind++) {
+    memcpy(payload, valid_payload, sizeof(valid_payload));
+    memcpy(encrypted, valid_encrypted, sizeof(valid_encrypted));
+    MakeAuthenticatedBadPayloadPadding(encrypted, payload, kind);
+    size_t rejectedn = sizeof(decrypted);
+    assert(omemoDecryptMessage(decrypted, &rejectedn, payload,
+                               sizeof(payload), encrypted, 16) ==
+           OMEMO_ECORRUPT);
+  }
+#else
+  uint8_t vector_key[32] = {0}, vector_ciphertext[16], vector_iv[16];
+  uint8_t vector_plaintext[16], untouched[16];
+  memset(vector_iv, 0, sizeof(vector_iv));
+  memset(untouched, 0xa5, sizeof(untouched));
+  CopyHex(vector_ciphertext,
+          "0388dace60b6a392f328c2b971b2fe78");
+  CopyHex(vector_key + 16,
+          "ab6e47d42cec13bdf53a67b21257bddf");
+  assert(!omemoDecryptMessageWithIVLength(
+      vector_plaintext, vector_key, sizeof(vector_key), vector_iv, 12,
+      vector_ciphertext, sizeof(vector_ciphertext)));
+  assert(!memcmp(vector_plaintext, (uint8_t[16]){0}, 16));
+  CopyHex(vector_ciphertext,
+          "a3b22b8449afafbcd6c09f2cfa9de2be");
+  CopyHex(vector_key + 16,
+          "d8b820bab954bd1647d8a9c3d534e7a3");
+  assert(!omemoDecryptMessageWithIVLength(
+      vector_plaintext, vector_key, sizeof(vector_key), vector_iv, 16,
+      vector_ciphertext, sizeof(vector_ciphertext)));
+  assert(!memcmp(vector_plaintext, (uint8_t[16]){0}, 16));
+  for (size_t ivn = 11; ivn <= 17; ivn++) {
+    if (ivn == 12 || ivn == 16)
+      continue;
+    memcpy(vector_plaintext, untouched, sizeof(untouched));
+    assert(omemoDecryptMessageWithIVLength(
+        vector_plaintext, vector_key, sizeof(vector_key), vector_iv, ivn,
+        vector_ciphertext, sizeof(vector_ciphertext)) == OMEMO_ECORRUPT);
+    assert(!memcmp(vector_plaintext, untouched, sizeof(untouched)));
+  }
 #endif
 }
 
@@ -328,6 +394,66 @@ static void Init(struct omemoSession *sessiona, struct omemoStore *storea, struc
   assert(omemoInitiateSession(sessiona, storea, storeb->cursignedprekey.sig, spk, ik, pk, storeb->cursignedprekey.id, storeb->prekeys[pk_id-1].id) == 0);
 }
 
+static void MakeAuthenticatedBadPadding(
+    const struct omemoSession *sender,
+    struct omemoKeyMessage *message, int kind) {
+  omemoKey next, mk;
+  assert(!GetBaseMaterials(next, mk, sender->state.cks));
+  struct DeriveChainKeyOutput kdfout[1];
+  assert(!DeriveKey(Zero32, mk, HkdfInfoMessageKeys, kdfout));
+#ifdef OMEMO2
+  struct ProtobufField outer[3] = {
+      [1] = {PB_REQUIRED | PB_LEN, 16},
+      [2] = {PB_REQUIRED | PB_LEN},
+  };
+  assert(!ParseProtobuf(message->p, message->n, outer, 3));
+  struct ProtobufField fields[5] = {
+      [PbMsg_n] = {PB_REQUIRED | PB_UINT32},
+      [PbMsg_pn] = {PB_REQUIRED | PB_UINT32},
+      [PbMsg_dh_pub] = {PB_REQUIRED | PB_LEN, SerLen},
+      [PbMsg_ciphertext] = {PB_REQUIRED | PB_LEN},
+  };
+  assert(!ParseProtobuf(outer[2].p, outer[2].v, fields, 5));
+#else
+  struct ProtobufField fields[5] = {
+      [PbMsg_dh_pub] = {PB_REQUIRED | PB_LEN, SerLen},
+      [PbMsg_n] = {PB_REQUIRED | PB_UINT32},
+      [PbMsg_pn] = {PB_REQUIRED | PB_UINT32},
+      [PbMsg_ciphertext] = {PB_REQUIRED | PB_LEN},
+  };
+  assert(!ParseProtobuf(message->p + 1, message->n - 9, fields, 5));
+#endif
+  size_t encryptedn = fields[PbMsg_ciphertext].v;
+  uint8_t plaintext[OMEMO_INTERNAL_PAYLOAD_MAXPADDEDSIZE];
+  assert(!omemoDriverAesDecrypt(kdfout->cipher, encryptedn, kdfout->iv,
+                                fields[PbMsg_ciphertext].p, plaintext));
+  if (kind == 0) {
+    plaintext[encryptedn - 1] = 0;
+  } else if (kind == 1) {
+    plaintext[encryptedn - 1] = 17;
+  } else {
+    plaintext[encryptedn - 2] = 3;
+    plaintext[encryptedn - 1] = 2;
+  }
+  assert(!omemoDriverAesEncrypt(kdfout->cipher, encryptedn, kdfout->iv,
+                                plaintext,
+                                (uint8_t *)fields[PbMsg_ciphertext].p));
+  uint8_t mac[32];
+#ifdef OMEMO2
+  assert(!GetSessionMac(mac, sender, kdfout->mac, outer[2].p, outer[2].v));
+  memcpy((uint8_t *)outer[1].p, mac, MACSIZE);
+#else
+  assert(!GetMac(mac, sender->identity, sender->remoteidentity, kdfout->mac,
+                 message->p, message->n - 8));
+  memcpy(message->p + message->n - 8, mac, MACSIZE);
+#endif
+  memset(next, 0, sizeof(next));
+  memset(mk, 0, sizeof(mk));
+  memset(kdfout, 0, sizeof(kdfout));
+  memset(plaintext, 0, sizeof(plaintext));
+  memset(mac, 0, sizeof(mac));
+}
+
 static void TestSession() {
   struct {
     uint8_t payload[OMEMO_KEYSIZE];
@@ -367,12 +493,47 @@ static void TestSession() {
   Recv(b, 5, false);
 
   Send(b, 3);
+  struct omemoSession sessionb_before4 = sessionb;
   Send(b, 4);
 
   assert(mkskippedi == 0);
+  struct omemoSession unchanged_session = sessiona;
+  struct omemoMessageKey unchanged_skipped[MKSKIPPEDN];
+  memcpy(unchanged_skipped, mkskipped, sizeof(unchanged_skipped));
+  messages[4].msg.p[messages[4].msg.n - 1] ^= 1;
+  uint8_t rejected[OMEMO_KEYSIZE];
+  size_t rejectedn = sizeof(rejected);
+  assert(omemoDecryptKey(&sessiona, &storea, rejected, &rejectedn, false,
+                         messages[4].msg.p, messages[4].msg.n) == OMEMO_EAUTH);
+  assert(!memcmp(&sessiona, &unchanged_session, sizeof(sessiona)));
+  assert(mkskippedi == 0);
+  assert(!memcmp(mkskipped, unchanged_skipped, sizeof(unchanged_skipped)));
+  messages[4].msg.p[messages[4].msg.n - 1] ^= 1;
+  struct omemoKeyMessage valid_message4 = messages[4].msg;
+  for (int kind = 0; kind < 3; kind++) {
+    messages[4].msg = valid_message4;
+    MakeAuthenticatedBadPadding(&sessionb_before4, &messages[4].msg, kind);
+    rejectedn = sizeof(rejected);
+    assert(omemoDecryptKey(&sessiona, &storea, rejected, &rejectedn, false,
+                           messages[4].msg.p, messages[4].msg.n) == OMEMO_ECORRUPT);
+    assert(!memcmp(&sessiona, &unchanged_session, sizeof(sessiona)));
+    assert(mkskippedi == 0);
+    assert(!memcmp(mkskipped, unchanged_skipped, sizeof(unchanged_skipped)));
+  }
+  messages[4].msg = valid_message4;
   Recv(a, 4, false);
 
   assert(mkskippedi == 1);
+  unchanged_session = sessiona;
+  memcpy(unchanged_skipped, mkskipped, sizeof(unchanged_skipped));
+  messages[3].msg.p[messages[3].msg.n - 1] ^= 1;
+  rejectedn = sizeof(rejected);
+  assert(omemoDecryptKey(&sessiona, &storea, rejected, &rejectedn, false,
+                         messages[3].msg.p, messages[3].msg.n) == OMEMO_EAUTH);
+  assert(!memcmp(&sessiona, &unchanged_session, sizeof(sessiona)));
+  assert(mkskippedi == 1);
+  assert(!memcmp(mkskipped, unchanged_skipped, sizeof(unchanged_skipped)));
+  messages[3].msg.p[messages[3].msg.n - 1] ^= 1;
   Recv(a, 3, false);
   assert(mkskippedi == 0);
 
@@ -583,6 +744,13 @@ static void TestSessionIntegration() {
 
   uint8_t payload[OMEMO_KEYSIZE];
   size_t pn[1] = {sizeof(payload)};
+  struct omemoSession authentication_session = session;
+  struct omemoStore authentication_store = store;
+  buf[n - 1] ^= 1;
+  assert(omemoDecryptKey(&authentication_session, &authentication_store,
+                         payload, pn, true, buf, n) == OMEMO_EAUTH);
+  buf[n - 1] ^= 1;
+  pn[0] = sizeof(payload);
   assert(!omemoDecryptKey(&session, &store, payload, pn, true, buf, n));
 
   uint8_t exp[OMEMO_KEYSIZE];

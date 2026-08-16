@@ -74,18 +74,83 @@ static omemo0LoadMessageKeyCallback  g_lmkcb;
 static omemo0StoreMessageKeyCallback g_smkcb;
 static omemo0RandomCallback          g_rndcb;
 
+enum MessageKeyMutationKind {
+  MESSAGE_KEY_LOADED,
+  MESSAGE_KEY_STORED,
+};
+
+struct MessageKeyMutation {
+  struct MessageKeyMutation *next;
+  struct omemo0Session *session;
+  struct omemo0MessageKey key;
+  enum MessageKeyMutationKind kind;
+};
+
+static struct MessageKeyMutation *g_message_key_mutations;
+static bool g_message_key_transaction;
+
+static void ClearMessageKeyMutation(struct MessageKeyMutation *mutation) {
+  volatile uint8_t *p = (volatile uint8_t *)mutation;
+  for (size_t i = 0; i < sizeof(*mutation); i++) p[i] = 0;
+}
+
+static void FinishMessageKeyTransaction(bool rollback) {
+  while (g_message_key_mutations) {
+    struct MessageKeyMutation *mutation = g_message_key_mutations;
+    g_message_key_mutations = mutation->next;
+    if (rollback && mutation->kind == MESSAGE_KEY_LOADED && g_smkcb)
+      g_smkcb(mutation->session, &mutation->key, 0);
+    else if (rollback && mutation->kind == MESSAGE_KEY_STORED && g_lmkcb) {
+      struct omemo0MessageKey key = mutation->key;
+      g_lmkcb(mutation->session, &key);
+      memset(&key, 0, sizeof(key));
+    }
+    ClearMessageKeyMutation(mutation);
+    free(mutation);
+  }
+  g_message_key_transaction = false;
+}
+
 #define WEAK __attribute__((weak))
 
 int WEAK omemo0LoadMessageKey(struct omemo0Session *s,
                              struct omemo0MessageKey *sk) {
-  if (g_lmkcb) return g_lmkcb(s, sk);
-  return 1;
+  if (!g_lmkcb) return 1;
+  if (!g_message_key_transaction) return g_lmkcb(s, sk);
+  struct MessageKeyMutation *mutation = malloc(sizeof(*mutation));
+  if (!mutation) return OMEMO0_EUSER;
+  int result = g_lmkcb(s, sk);
+  if (result) {
+    ClearMessageKeyMutation(mutation);
+    free(mutation);
+    return result;
+  }
+  mutation->session = s;
+  mutation->key = *sk;
+  mutation->kind = MESSAGE_KEY_LOADED;
+  mutation->next = g_message_key_mutations;
+  g_message_key_mutations = mutation;
+  return 0;
 }
 
 int WEAK omemo0StoreMessageKey(struct omemo0Session *s,
                               const struct omemo0MessageKey *sk,
                               uint64_t n) {
-  if (g_smkcb) return g_smkcb(s, sk, n);
+  if (!g_smkcb) return 0;
+  if (!g_message_key_transaction) return g_smkcb(s, sk, n);
+  struct MessageKeyMutation *mutation = malloc(sizeof(*mutation));
+  if (!mutation) return OMEMO0_EUSER;
+  int result = g_smkcb(s, sk, n);
+  if (result) {
+    ClearMessageKeyMutation(mutation);
+    free(mutation);
+    return result;
+  }
+  mutation->session = s;
+  mutation->key = *sk;
+  mutation->kind = MESSAGE_KEY_STORED;
+  mutation->next = g_message_key_mutations;
+  g_message_key_mutations = mutation;
   return 0;
 }
 
@@ -487,6 +552,19 @@ static int GetMac(uint8_t d[static MACSIZE], const omemo0Key ika,
 
 #define GetPad(n) (16 - ((n) % 16))
 
+static int GetUnpaddedSize(size_t *outn, const uint8_t *d, size_t n) {
+  if (!outn || !d || !n)
+    return OMEMO0_ECORRUPT;
+  uint8_t pad = d[n - 1];
+  if (!pad || pad > 16 || pad > n)
+    return OMEMO0_ECORRUPT;
+  for (size_t i = n - pad; i < n; i++)
+    if (d[i] != pad)
+      return OMEMO0_ECORRUPT;
+  *outn = n - pad;
+  return 0;
+}
+
 static int Encrypt(uint8_t out[OMEMO0_INTERNAL_PAYLOAD_MAXPADDEDSIZE],
                    const uint8_t *in, size_t n, omemo0Key key,
                    uint8_t iv[static 16]) {
@@ -793,7 +871,7 @@ static int DecryptKeyImpl(struct omemo0Session *session,
             : GetAmountSkipped(session->state.nr, headern);
     if (shouldstep) {
       TRY(SkipMessageKeys(session, headerpn, nskips));
-      nskips -= headern;
+      nskips = headern;
       TRY(DHRatchet(&session->state, headerdh));
     }
     TRY(SkipMessageKeys(session, headern, nskips));
@@ -807,15 +885,15 @@ static int DecryptKeyImpl(struct omemo0Session *session,
   TRY(GetMac(mac, session->remoteidentity, session->identity,
              kdfout->mac, msg, msgn - 8));
   if (omemoDriverCompare(mac, realmac, MACSIZE))
-    return OMEMO0_ECORRUPT;
+    return OMEMO0_EAUTH;
   uint8_t tmp[OMEMO0_INTERNAL_PAYLOAD_MAXPADDEDSIZE];
   TRY(omemoDriverAesDecrypt(kdfout->cipher, encn, kdfout->iv,
          fields[PbMsg_ciphertext].p, tmp));
-  uint8_t pad = tmp[encn - 1];
-  if (pad > 16 || pad > encn || encn - pad > *keyn)
+  size_t plaintextn;
+  if (GetUnpaddedSize(&plaintextn, tmp, encn) || plaintextn > *keyn)
     return OMEMO0_ECORRUPT;
-  memcpy(key, tmp, encn - pad);
-  *keyn = encn - pad;
+  memcpy(key, tmp, plaintextn);
+  *keyn = plaintextn;
 
   session->init = SESSION_READY;
   return 0;
@@ -889,16 +967,20 @@ int omemo0DecryptKey(struct omemo0Session *session,
                                  size_t msgn) {
   if (!session || !store || !key || !keyn || !store->init || !msg)
     return OMEMO0_EPARAM;
+  if (g_message_key_transaction) return OMEMO0_ESTATE;
   // We only have to backup session->state functionality wise, but to
   // ensure session stays the same before and after an error we backup
   // everything.
   struct omemo0Session backup;
   memcpy(&backup, session, sizeof(struct omemo0Session));
+  g_message_key_transaction = true;
+  g_message_key_mutations = NULL;
   int r;
   if ((r = DecryptGenericKeyImpl(session, store, key, keyn, isprekey,
                                  msg, msgn))) {
     memcpy(session, &backup, sizeof(struct omemo0Session));
   }
+  FinishMessageKeyTransaction(r != 0);
   return r;
 }
 
@@ -925,16 +1007,25 @@ int omemo0Heartbeat(struct omemo0Session *session,
 /******************** MESSAGE CONTENT ENCRYPTION *********************/
 
 
-int omemo0DecryptMessage(uint8_t *d, const uint8_t *key,
-                                     size_t keyn, const uint8_t iv[12],
-                                     const uint8_t *s, size_t n) {
+int omemo0DecryptMessageWithIVLength(uint8_t *d, const uint8_t *key,
+                                     size_t keyn, const uint8_t *iv,
+                                     size_t ivn, const uint8_t *s,
+                                     size_t n) {
   if (!d || !key || !iv || !s)
     return OMEMO0_EPARAM;
+  if (ivn != 12 && ivn != 16)
+    return OMEMO0_ECORRUPT;
   int r = 0;
   if (keyn < 32)
     return OMEMO0_ECORRUPT;
-  TRY(omemoDriverGcmDecrypt(d, key, n, iv, key+16, keyn-16, s));
+  TRY(omemoDriverGcmDecrypt(d, key, n, iv, ivn, key+16, keyn-16, s));
   return r ? OMEMO0_ECRYPTO : 0;
+}
+
+int omemo0DecryptMessage(uint8_t *d, const uint8_t *key,
+                                     size_t keyn, const uint8_t iv[12],
+                                     const uint8_t *s, size_t n) {
+  return omemo0DecryptMessageWithIVLength(d, key, keyn, iv, 12, s, n);
 }
 
 

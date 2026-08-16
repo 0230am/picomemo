@@ -38,6 +38,7 @@
 #define OMEMO2_ESTORE    (-7)
 #define OMEMO2_EUSER     (-8)
 #define OMEMO2_ERANDOM   (-9)
+#define OMEMO2_EAUTH     (-10)
 
 
 #define OMEMO2_KEYSIZE                        48
