@@ -16,7 +16,7 @@
 #
 ###
 
-V:=1.2.1
+V:=1.2.2
 SO_VERSION:=1
 
 PREFIX?=/usr/local

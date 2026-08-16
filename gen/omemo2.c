@@ -104,8 +104,8 @@ struct MessageKeyMutation {
   enum MessageKeyMutationKind kind;
 };
 
-static struct MessageKeyMutation *g_message_key_mutations;
-static bool g_message_key_transaction;
+static _Thread_local struct MessageKeyMutation *g_message_key_mutations;
+static _Thread_local bool g_message_key_transaction;
 
 static void ClearMessageKeyMutation(struct MessageKeyMutation *mutation) {
   volatile uint8_t *p = (volatile uint8_t *)mutation;

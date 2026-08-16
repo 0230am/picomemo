@@ -363,6 +363,7 @@ static void RemoveSkippedKey(int i) {
   memmove(mkskipped + i, mkskipped + i + 1,
           n * sizeof(*mkskipped));
   mkskippedi--;
+  memset(&mkskipped[mkskippedi], 0, sizeof(*mkskipped));
 }
 
 int LoadMessageKey(struct omemoSession *s, struct omemoMessageKey *k) {

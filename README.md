@@ -1,5 +1,10 @@
 ## Picomemo
 
+The downstream `master` branch reports native library version 1.2.2. Session
+state written by the unmodified 1.2.1 OMEMO 2 implementation does not contain
+the initiator/responder role required for corrected associated-data ordering and
+must be re-established instead of being interpreted as corrected state.
+
 This repository contains a compact and portable implementation of the
 cryptography required for XMPP's OMEMO (E2EE).
 
