@@ -747,10 +747,41 @@ static void TestSessionIntegration() {
   size_t pn[1] = {sizeof(payload)};
   struct omemoSession authentication_session = session;
   struct omemoStore authentication_store = store;
-  buf[n - 1] ^= 1;
+  uint8_t *authentication_byte;
+#ifdef OMEMO2
+  struct ProtobufField envelope[6] = {
+      [PbKeyEx_pk_id] = {PB_REQUIRED | PB_UINT32},
+      [PbKeyEx_spk_id] = {PB_REQUIRED | PB_UINT32},
+      [PbKeyEx_ik] = {PB_REQUIRED | PB_LEN, SerLen},
+      [PbKeyEx_ek] = {PB_REQUIRED | PB_LEN, SerLen},
+      [PbKeyEx_message] = {PB_REQUIRED | PB_LEN},
+  };
+  assert(!ParseProtobuf(buf, n, envelope, 6));
+  struct ProtobufField inner[3] = {
+      [1] = {PB_REQUIRED | PB_LEN, 16},
+      [2] = {PB_REQUIRED | PB_LEN},
+  };
+  assert(!ParseProtobuf(envelope[PbKeyEx_message].p,
+                        envelope[PbKeyEx_message].v, inner, 3));
+  authentication_byte = (uint8_t *)inner[1].p;
+#else
+  struct ProtobufField envelope[7] = {
+      [5] = {PB_UINT32},
+      [PbKeyEx_pk_id] = {PB_REQUIRED | PB_UINT32},
+      [PbKeyEx_spk_id] = {PB_REQUIRED | PB_UINT32},
+      [PbKeyEx_ek] = {PB_REQUIRED | PB_LEN, SerLen},
+      [PbKeyEx_ik] = {PB_REQUIRED | PB_LEN, SerLen},
+      [PbKeyEx_message] = {PB_REQUIRED | PB_LEN},
+  };
+  assert(!ParseProtobuf(buf + 1, n - 1, envelope, 7));
+  authentication_byte =
+      (uint8_t *)envelope[PbKeyEx_message].p +
+      envelope[PbKeyEx_message].v - 1;
+#endif
+  *authentication_byte ^= 1;
   assert(omemoDecryptKey(&authentication_session, &authentication_store,
                          payload, pn, true, buf, n) == OMEMO_EAUTH);
-  buf[n - 1] ^= 1;
+  *authentication_byte ^= 1;
   pn[0] = sizeof(payload);
   assert(!omemoDecryptKey(&session, &store, payload, pn, true, buf, n));
 
