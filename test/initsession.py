@@ -1,14 +1,15 @@
 import asyncio
 import os
+import subprocess
 import sys
+from typing import Dict
 
-import xeddsa
 import x3dh
-from oldmemo import oldmemo
 from twomemo import twomemo
 import omemo
-from omemo.storage import Maybe, JSONType, Nothing
+from omemo.storage import Just, Maybe, JSONType, Nothing
 
+sys.path.insert(0, os.path.abspath("o"))
 
 if sys.argv[1] == "bundle":
     import bundle
@@ -38,7 +39,14 @@ class StorageImpl(omemo.storage.Storage):
         self.__data.pop(key, None)
 
 
+def run_interop(binary: str, *args: str) -> None:
+    command = ["node", binary] if binary.endswith(".cjs") else [binary]
+    subprocess.run(command + list(args), check=True)
+
+
 async def run_oldmemo():
+    import xeddsa
+    from oldmemo import oldmemo
     ik=xeddsa.curve25519_pub_to_ed25519_pub(oldmemo.StateImpl.parse_public_key(bundle.ik), bool((bundle.spks[63] >> 7) & 1))
 
     spks=bytearray(bundle.spks)
@@ -82,6 +90,38 @@ async def run_twomemo():
     ser=ses.key_exchange.serialize(msg.serialize())
     with open("o/msg2.bin", "wb") as f:
         f.write(ser)
+    if len(sys.argv) == 2:
+        return
+
+    interop = sys.argv[2]
+    run_interop(
+        interop, "initial", "o/msg2.bin", "o/resp2.bin",
+        "o/session2.bin"
+    )
+    with open("o/resp2.bin", "rb") as f:
+        response = twomemo.EncryptedKeyMaterialImpl.parse(
+            f.read(), "user@localhost", 8
+        )
+    decrypted = await o.decrypt_key_material(ses, response)
+    assert decrypted.key == b"\xcc" * 32
+    assert decrypted.auth_tag == b"\x33" * 16
+
+    k=twomemo.PlainKeyMaterialImpl(b"\xdd"*32,b"\x44"*16)
+    msg = await o.encrypt_key_material(ses, k)
+    with open("o/msg2-next.bin", "wb") as f:
+        f.write(msg.serialize())
+    run_interop(
+        interop, "next", "o/msg2-next.bin", "o/resp2-next.bin",
+        "o/session2.bin"
+    )
+    with open("o/resp2-next.bin", "rb") as f:
+        response = twomemo.EncryptedKeyMaterialImpl.parse(
+            f.read(), "user@localhost", 8
+        )
+    decrypted = await o.decrypt_key_material(ses, response)
+    assert decrypted.key == b"\xee" * 32
+    assert decrypted.auth_tag == b"\x66" * 16
+    print("Bidirectional python-twomemo OMEMO 2 interop succeeded")
 
 async def main():
     if OMEMO2:

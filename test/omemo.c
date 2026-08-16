@@ -248,6 +248,33 @@ static void TestEncryption() {
 #endif
 }
 
+#ifdef OMEMO2
+static void TestAssociatedDataOrdering() {
+  struct omemoSession active = {.init = SESSION_READY |
+                                        SESSION_ROLE_KNOWN |
+                                        SESSION_INITIATOR};
+  struct omemoSession passive = {.init = SESSION_READY |
+                                         SESSION_ROLE_KNOWN};
+  memset(active.identity, 0xaa, 32);
+  memset(active.remoteidentity, 0xbb, 32);
+  memcpy(passive.identity, active.remoteidentity, 32);
+  memcpy(passive.remoteidentity, active.identity, 32);
+  omemoKey mk = {0};
+  uint8_t active_mac[MACSIZE], passive_mac[MACSIZE];
+  assert(!GetSessionMac(active_mac, &active, mk,
+                        (const uint8_t *)"message", 7));
+  assert(!GetSessionMac(passive_mac, &passive, mk,
+                        (const uint8_t *)"message", 7));
+  assert(!memcmp(active_mac, passive_mac, MACSIZE));
+
+  struct omemoSession legacy = {.init = SESSION_READY};
+  struct omemoKeyMessage message;
+  uint8_t payload[OMEMO_KEYSIZE] = {0};
+  assert(EncryptKeyImpl(&legacy, &message, payload, sizeof(payload)) ==
+         OMEMO_ESTATE);
+}
+#endif
+
 // user is either a or b
 #define Send(user, id) do { \
     assert(!omemoRandom(messages[id].payload, OMEMO_KEYSIZE)); \
@@ -316,14 +343,28 @@ static void TestSession() {
   memset(&sessionb, 0, sizeof(sessionb));
   Init(&sessiona, &storea, &storeb);
 
+#ifdef OMEMO2
+  assert(IsSessionInitiator(&sessiona));
+#endif
+
+  // Initial PreKey message from the active initiator.
   Send(a, 0);
   Recv(b, 0, true);
 
+#ifdef OMEMO2
+  assert(!IsSessionInitiator(&sessionb));
+#endif
+
+  // The passive responder's first reply.
   Send(b, 1);
   Recv(a, 1, false);
 
+  // Subsequent traffic in both directions.
   Send(b, 2);
   Recv(a, 2, false);
+
+  Send(a, 5);
+  Recv(b, 5, false);
 
   Send(b, 3);
   Send(b, 4);
@@ -589,6 +630,9 @@ int main() {
   RunTest(TestRotate);
   RunTest(TestSignature);
   RunTest(TestEncryption);
+#ifdef OMEMO2
+  RunTest(TestAssociatedDataOrdering);
+#endif
   RunTest(TestHkdf);
   RunTest(TestRatchet);
   RunTest(TestDeriveChainKey);
