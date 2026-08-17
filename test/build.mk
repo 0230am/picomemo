@@ -19,16 +19,20 @@ o/test-interop-omemo2: test/interop-omemo2.c omemo.c $(DRIVEROBJS) o/store2.inc
 	$(CC) -o $@ test/interop-omemo2.c omemo.c $(DRIVEROBJS) \
 				$(TESTCFLAGS) $(OMEMOCFLAGS) $(LIBS) -DOMEMO2
 
+o/test-interop-omemo: test/interop-omemo.c omemo.c $(DRIVEROBJS) o/store.inc
+	$(CC) -o $@ test/interop-omemo.c omemo.c $(DRIVEROBJS) \
+				$(TESTCFLAGS) $(OMEMOCFLAGS) $(LIBS)
+
 o/generate: test/generate.c omemo.c $(DRIVEROBJS)
 	$(CC) -o $@ test/generate.c omemo.c $(DRIVEROBJS) $(TESTCFLAGS) $(LIBS)
 
 o/generate2: test/generate.c omemo.c $(DRIVEROBJS)
 	$(CC) -o $@ test/generate.c omemo.c $(DRIVEROBJS) $(TESTCFLAGS) $(LIBS) -DOMEMO2
 
-o/msg.bin: test/initsession.py o/bundle.py | test/bot-venv
+o/msg.bin: test/initsession.py o/bundle.py | test/bot-venv/.installed
 	PYTHONPATH=o ./test/bot-venv/bin/python test/initsession.py bundle
 
-o/msg2.bin: test/initsession.py o/bundle2.py | test/bot-venv
+o/msg2.bin: test/initsession.py o/bundle2.py | test/bot-venv/.installed
 	PYTHONPATH=o ./test/bot-venv/bin/python test/initsession.py bundle2
 
 test/localhost.crt:
@@ -56,9 +60,14 @@ test-omemo2: o/test-omemo2
 	$(TESTRUNTOOL) ./o/test-omemo2
 
 .PHONY: test-interop-omemo2
-test-interop-omemo2: o/test-interop-omemo2 | test/interop-venv
+test-interop-omemo2: o/test-interop-omemo2 | test/interop-venv/.installed
 	PYTHONPATH=o ./test/interop-venv/bin/python test/initsession.py \
 		bundle2 ./o/test-interop-omemo2
+
+.PHONY: test-interop-omemo
+test-interop-omemo: o/test-interop-omemo | test/interop-venv/.installed
+	PYTHONPATH=o ./test/interop-venv/bin/python test/initsession.py \
+		legacy-interop ./o/test-interop-omemo
 
 .PHONY: start-prosody
 start-prosody: test/localhost.crt
@@ -77,15 +86,16 @@ reset-accounts:
 	   prosodyctl register admin localhost adminpass && \
 	   prosodyctl register user  localhost userpass'
 
-test/bot-venv:
+test/bot-venv/.installed: test/requirements-bot.txt
 	python -m venv test/bot-venv
-	./test/bot-venv/bin/pip install slixmpp==1.8.5
-	./test/bot-venv/bin/pip install slixmpp-omemo==1.0.0
+	./test/bot-venv/bin/pip install -r test/requirements-bot.txt
+	touch $@
 
-test/interop-venv:
+test/interop-venv/.installed: test/requirements-interop.txt
 	python -m venv test/interop-venv
-	./test/interop-venv/bin/pip install OMEMO==2.1.0 Twomemo==2.1.0
+	./test/interop-venv/bin/pip install -r test/requirements-interop.txt
+	touch $@
 
-start-omemo-bot: | test/bot-venv
+start-omemo-bot: | test/bot-venv/.installed
 	./test/bot-venv/bin/python test/bot-omemo.py
 

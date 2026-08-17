@@ -5,4 +5,5 @@ TESTRUNTOOL="$V" DRIVERS="hacl.c   mbedtls.c" make clean test-omemo test-omemo2
 TESTRUNTOOL="$V" DRIVERS="c25519.c mbedtls.c" make clean test-omemo test-omemo2
 TESTRUNTOOL="$V" DRIVERS="hacl.c   openssl.c" make clean test-omemo test-omemo2
 TESTRUNTOOL="$V" DRIVERS="c25519.c openssl.c" make clean test-omemo test-omemo2
-DRIVERS="hacl.c mbedtls.c" make clean test-interop-omemo2
+DRIVERS="hacl.c mbedtls.c" make clean \
+  test-interop-omemo test-interop-omemo2

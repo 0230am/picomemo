@@ -734,9 +734,9 @@ static void TestSessionIntegration() {
   uint8_t buf[1000];
   omemoDeserializeStore(store_inc, store_inc_len, &store);
 #ifdef OMEMO2
-  FILE *f = fopen("o/msg2.bin", "r");
+  FILE *f = fopen("o/msg2.bin", "rb");
 #else
-  FILE *f = fopen("o/msg.bin", "r");
+  FILE *f = fopen("o/msg.bin", "rb");
 #endif
   assert(f);
   int n = fread(buf, 1, 1000, f);
@@ -795,13 +795,14 @@ static void TestSessionIntegration() {
 #endif
   assert(!memcmp(exp, payload, sizeof(exp)));
 
-  memset(payload, 0xcc, sizeof(payload));
+  memset(payload, 0xcc, sizeof(payload) - 16);
+  memset(payload + sizeof(payload) - 16, 0x33, 16);
   struct omemoKeyMessage msg;
   assert(!omemoEncryptKey(&session, &msg, payload, sizeof(payload)));
 #ifdef OMEMO2
-  f = fopen("o/resp2.bin", "w");
+  f = fopen("o/resp2.bin", "wb");
 #else
-  f = fopen("o/resp.bin", "w");
+  f = fopen("o/resp.bin", "wb");
 #endif
   assert(f);
   assert(fwrite(msg.p, 1, msg.n, f) == msg.n);

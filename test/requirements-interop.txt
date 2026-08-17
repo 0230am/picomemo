@@ -1,0 +1,3 @@
+OMEMO==2.1.0
+Oldmemo==2.1.0
+Twomemo==2.1.0
